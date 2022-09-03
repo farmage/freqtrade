@@ -422,13 +422,20 @@ def test_api_reloadconf(botclient):
     assert ftbot.state == State.RELOAD_CONFIG
 
 
-def test_api_stopbuy(botclient):
+def test_api_stopentry(botclient):
     ftbot, client = botclient
     assert ftbot.config['max_open_trades'] != 0
 
     rc = client_post(client, f"{BASE_URI}/stopbuy")
     assert_response(rc)
-    assert rc.json() == {'status': 'No more buy will occur from now. Run /reload_config to reset.'}
+    assert rc.json() == {
+        'status': 'No more entries will occur from now. Run /reload_config to reset.'}
+    assert ftbot.config['max_open_trades'] == 0
+
+    rc = client_post(client, f"{BASE_URI}/stopentry")
+    assert_response(rc)
+    assert rc.json() == {
+        'status': 'No more entries will occur from now. Run /reload_config to reset.'}
     assert ftbot.config['max_open_trades'] == 0
 
 
@@ -892,7 +899,7 @@ def test_api_performance(botclient, fee):
     assert_response(rc)
     assert len(rc.json()) == 2
     assert rc.json() == [{'count': 1, 'pair': 'LTC/ETH', 'profit': 7.61, 'profit_pct': 7.61,
-                          'profit_ratio': 0.07609203, 'profit_abs': 0.01872279},
+                          'profit_ratio': 0.07609203, 'profit_abs': 0.0187228},
                          {'count': 1, 'pair': 'XRP/ETH', 'profit': -5.57, 'profit_pct': -5.57,
                           'profit_ratio': -0.05570419, 'profit_abs': -0.1150375}]
 
@@ -1420,7 +1427,10 @@ def test_api_strategies(botclient):
         'InformativeDecoratorTest',
         'StrategyTestV2',
         'StrategyTestV3',
-        'StrategyTestV3Futures'
+        'StrategyTestV3Futures',
+        'freqai_test_classifier',
+        'freqai_test_multimodel_strat',
+        'freqai_test_strat'
     ]}
 
 

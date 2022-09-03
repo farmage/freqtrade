@@ -149,7 +149,7 @@ You can create your own keyboard in `config.json`:
 !!! Note "Supported Commands"
     Only the following commands are allowed. Command arguments are not supported!
 
-    `/start`, `/stop`, `/status`, `/status table`, `/trades`, `/profit`, `/performance`, `/daily`, `/stats`, `/count`, `/locks`, `/balance`, `/stopbuy`, `/reload_config`, `/show_config`, `/logs`, `/whitelist`, `/blacklist`, `/edge`, `/help`, `/version`
+    `/start`, `/stop`, `/status`, `/status table`, `/trades`, `/profit`, `/performance`, `/daily`, `/stats`, `/count`, `/locks`, `/balance`, `/stopentry`, `/reload_config`, `/show_config`, `/logs`, `/whitelist`, `/blacklist`, `/edge`, `/help`, `/version`
 
 ## Telegram commands
 
@@ -161,7 +161,7 @@ official commands. You can ask at any moment for help with `/help`.
 |----------|-------------|
 | `/start` | Starts the trader
 | `/stop` | Stops the trader
-| `/stopbuy` | Stops the trader from opening new trades. Gracefully closes open trades according to their rules.
+| `/stopbuy | /stopentry` | Stops the trader from opening new trades. Gracefully closes open trades according to their rules.
 | `/reload_config` | Reloads the configuration file
 | `/show_config` | Shows part of the current configuration with relevant settings to operation
 | `/logs [limit]` | Show last log messages.
@@ -187,7 +187,7 @@ official commands. You can ask at any moment for help with `/help`.
 | `/stats` | Shows Wins / losses by Exit reason as well as Avg. holding durations for buys and sells
 | `/exits` | Shows Wins / losses by Exit reason as well as Avg. holding durations for buys and sells
 | `/entries` | Shows Wins / losses by Exit reason as well as Avg. holding durations for buys and sells
-| `/whitelist` | Show the current whitelist
+| `/whitelist [sorted] [baseonly]` | Show the current whitelist. Optionally display in alphabetical order and/or with just the base currency of each pairing.
 | `/blacklist [pair]` | Show the current blacklist, or adds a pair to the blacklist.
 | `/edge` | Show validated pairs by Edge if it is enabled.
 | `/help` | Show help message

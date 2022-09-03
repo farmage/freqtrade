@@ -5,7 +5,6 @@ import copy
 import logging
 import traceback
 from datetime import datetime, time, timedelta, timezone
-from decimal import Decimal
 from math import isclose
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,8 +21,7 @@ from freqtrade.enums import (ExitCheckTuple, ExitType, RPCMessageType, RunMode, 
                              State, TradingMode)
 from freqtrade.exceptions import (DependencyException, ExchangeError, InsufficientFundsError,
                                   InvalidOrderException, PricingError)
-from freqtrade.exchange import timeframe_to_minutes, timeframe_to_seconds
-from freqtrade.exchange.exchange import timeframe_to_next_date
+from freqtrade.exchange import timeframe_to_minutes, timeframe_to_next_date, timeframe_to_seconds
 from freqtrade.misc import safe_value_fallback, safe_value_fallback2
 from freqtrade.mixins import LoggingMixin
 from freqtrade.persistence import Order, PairLocks, Trade, init_db
@@ -33,6 +31,7 @@ from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.rpc import RPCManager
 from freqtrade.strategy.interface import IStrategy
 from freqtrade.strategy.strategy_wrapper import strategy_safe_wrapper
+from freqtrade.util import FtPrecise
 from freqtrade.wallets import Wallets
 
 
@@ -159,6 +158,8 @@ class FreqtradeBot(LoggingMixin):
         performs startup tasks
         """
         self.rpc.startup_messages(self.config, self.pairlists, self.protections)
+        # Update older trades with precision and precision mode
+        self.startup_backpopulate_precision()
         if not self.edge:
             # Adjust stoploss if it was changed
             Trade.stoploss_reinitialization(self.strategy.stoploss)
@@ -238,7 +239,7 @@ class FreqtradeBot(LoggingMixin):
                 'status':
                     f"{len(open_trades)} open trades active.\n\n"
                     f"Handle these trades manually on {self.exchange.name}, "
-                    f"or '/start' the bot again and use '/stopbuy' "
+                    f"or '/start' the bot again and use '/stopentry' "
                     f"to handle open trades gracefully. \n"
                     f"{'Note: Trades are simulated (dry run).' if self.config['dry_run'] else ''}",
             }
@@ -269,7 +270,7 @@ class FreqtradeBot(LoggingMixin):
         Return the number of free open trades slots or 0 if
         max number of open trades reached
         """
-        open_trades = len(Trade.get_open_trades())
+        open_trades = Trade.get_open_trade_count()
         return max(0, self.config['max_open_trades'] - open_trades)
 
     def update_funding_fees(self):
@@ -285,6 +286,18 @@ class FreqtradeBot(LoggingMixin):
                 trade.funding_fees = funding_fees
         else:
             return 0.0
+
+    def startup_backpopulate_precision(self):
+
+        trades = Trade.get_trades([Trade.contract_size.is_(None)])
+        for trade in trades:
+            if trade.exchange != self.exchange.id:
+                continue
+            trade.precision_mode = self.exchange.precisionMode
+            trade.amount_precision = self.exchange.get_precision_amount(trade.pair)
+            trade.price_precision = self.exchange.get_precision_price(trade.pair)
+            trade.contract_size = self.exchange.get_contract_size(trade.pair)
+        Trade.commit()
 
     def startup_update_open_orders(self):
         """
@@ -405,7 +418,7 @@ class FreqtradeBot(LoggingMixin):
 
         whitelist = copy.deepcopy(self.active_pair_whitelist)
         if not whitelist:
-            logger.info("Active pair whitelist is empty.")
+            self.log_once("Active pair whitelist is empty.", logger.info)
             return trades_created
         # Remove pairs for currently opened trades from the whitelist
         for trade in Trade.get_open_trades():
@@ -414,8 +427,8 @@ class FreqtradeBot(LoggingMixin):
                 logger.debug('Ignoring %s in pair whitelist', trade.pair)
 
         if not whitelist:
-            logger.info("No currency pair in active pair whitelist, "
-                        "but checking to exit open trades.")
+            self.log_once("No currency pair in active pair whitelist, "
+                          "but checking to exit open trades.", logger.info)
             return trades_created
         if PairLocks.is_global_lock(side='*'):
             # This only checks for total locks (both sides).
@@ -565,7 +578,7 @@ class FreqtradeBot(LoggingMixin):
 
         if stake_amount is not None and stake_amount < 0.0:
             # We should decrease our position
-            amount = abs(float(Decimal(stake_amount) / Decimal(current_exit_rate)))
+            amount = abs(float(FtPrecise(stake_amount) / FtPrecise(current_exit_rate)))
             if amount > trade.amount:
                 # This is currently ineffective as remaining would become < min tradable
                 # Fixing this would require checking for 0.0 there -
@@ -738,7 +751,11 @@ class FreqtradeBot(LoggingMixin):
                 leverage=leverage,
                 is_short=is_short,
                 trading_mode=self.trading_mode,
-                funding_fees=funding_fees
+                funding_fees=funding_fees,
+                amount_precision=self.exchange.get_precision_amount(pair),
+                price_precision=self.exchange.get_precision_price(pair),
+                precision_mode=self.exchange.precisionMode,
+                contract_size=self.exchange.get_contract_size(pair),
             )
         else:
             # This is additional buy, we reset fee_open_currency so timeout checking can work
@@ -1475,12 +1492,6 @@ class FreqtradeBot(LoggingMixin):
                 ExitType.STOP_LOSS, ExitType.TRAILING_STOP_LOSS, ExitType.LIQUIDATION):
             exit_type = 'stoploss'
 
-        # if stoploss is on exchange and we are on dry_run mode,
-        # we consider the sell price stop price
-        if (self.config['dry_run'] and exit_type == 'stoploss'
-                and self.strategy.order_types['stoploss_on_exchange']):
-            limit = trade.stoploss_or_liquidation
-
         # set custom_exit_price if available
         proposed_limit_rate = limit
         current_profit = trade.calc_profit_ratio(limit)
@@ -1541,9 +1552,10 @@ class FreqtradeBot(LoggingMixin):
         trade.close_rate_requested = limit
         trade.exit_reason = exit_reason
 
-        # Lock pair for one candle to prevent immediate re-trading
-        self.strategy.lock_pair(trade.pair, datetime.now(timezone.utc),
-                                reason='Auto lock')
+        if not sub_trade_amt:
+            # Lock pair for one candle to prevent immediate re-trading
+            self.strategy.lock_pair(trade.pair, datetime.now(timezone.utc),
+                                    reason='Auto lock')
 
         self._notify_exit(trade, order_type, sub_trade=bool(sub_trade_amt), order=order_obj)
         # In case of market sell orders the order can be closed immediately
@@ -1720,11 +1732,12 @@ class FreqtradeBot(LoggingMixin):
                 # TODO: Margin will need to use interest_rate as well.
                 # interest_rate = self.exchange.get_interest_rate()
                 trade.set_liquidation_price(self.exchange.get_liquidation_price(
-                    leverage=trade.leverage,
                     pair=trade.pair,
-                    amount=trade.amount,
                     open_rate=trade.open_rate,
-                    is_short=trade.is_short
+                    is_short=trade.is_short,
+                    amount=trade.amount,
+                    stake_amount=trade.stake_amount,
+                    wallet_balance=trade.stake_amount,
                 ))
 
             # Updating wallets when order is closed
@@ -1765,7 +1778,7 @@ class FreqtradeBot(LoggingMixin):
             self.rpc.send_msg(msg)
 
     def apply_fee_conditional(self, trade: Trade, trade_base_currency: str,
-                              amount: float, fee_abs: float) -> float:
+                              amount: float, fee_abs: float, order_obj: Order) -> Optional[float]:
         """
         Applies the fee to amount (either from Order or from Trades).
         Can eat into dust if more than the required asset is available.
@@ -1773,40 +1786,42 @@ class FreqtradeBot(LoggingMixin):
         never in base currency.
         """
         self.wallets.update()
-        if fee_abs != 0 and self.wallets.get_free(trade_base_currency) >= amount:
+        amount_ = amount
+        if order_obj.ft_order_side == trade.exit_side or order_obj.ft_order_side == 'stoploss':
+            # check against remaining amount!
+            amount_ = trade.amount - amount
+
+        if fee_abs != 0 and self.wallets.get_free(trade_base_currency) >= amount_:
             # Eat into dust if we own more than base currency
             logger.info(f"Fee amount for {trade} was in base currency - "
                         f"Eating Fee {fee_abs} into dust.")
         elif fee_abs != 0:
-            real_amount = self.exchange.amount_to_precision(trade.pair, amount - fee_abs)
-            logger.info(f"Applying fee on amount for {trade} "
-                        f"(from {amount} to {real_amount}).")
-            return real_amount
-        return amount
+            logger.info(f"Applying fee on amount for {trade}, fee={fee_abs}.")
+            return fee_abs
+        return None
 
     def handle_order_fee(self, trade: Trade, order_obj: Order, order: Dict[str, Any]) -> None:
         # Try update amount (binance-fix)
         try:
-            new_amount = self.get_real_amount(trade, order, order_obj)
-            if not isclose(safe_value_fallback(order, 'filled', 'amount'), new_amount,
-                           abs_tol=constants.MATH_CLOSE_PREC):
-                order_obj.ft_fee_base = trade.amount - new_amount
+            fee_abs = self.get_real_amount(trade, order, order_obj)
+            if fee_abs is not None:
+                order_obj.ft_fee_base = fee_abs
         except DependencyException as exception:
             logger.warning("Could not update trade amount: %s", exception)
 
-    def get_real_amount(self, trade: Trade, order: Dict, order_obj: Order) -> float:
+    def get_real_amount(self, trade: Trade, order: Dict, order_obj: Order) -> Optional[float]:
         """
         Detect and update trade fee.
         Calls trade.update_fee() upon correct detection.
         Returns modified amount if the fee was taken from the destination currency.
         Necessary for exchanges which charge fees in base currency (e.g. binance)
-        :return: identical (or new) amount for the trade
+        :return: Absolute fee to apply for this order or None
         """
         # Init variables
         order_amount = safe_value_fallback(order, 'filled', 'amount')
         # Only run for closed orders
         if trade.fee_updated(order.get('side', '')) or order['status'] == 'open':
-            return order_amount
+            return None
 
         trade_base_currency = self.exchange.get_pair_base_currency(trade.pair)
         # use fee from order-dict if possible
@@ -1823,13 +1838,14 @@ class FreqtradeBot(LoggingMixin):
                 if trade_base_currency == fee_currency:
                     # Apply fee to amount
                     return self.apply_fee_conditional(trade, trade_base_currency,
-                                                      amount=order_amount, fee_abs=fee_cost)
-                return order_amount
+                                                      amount=order_amount, fee_abs=fee_cost,
+                                                      order_obj=order_obj)
+                return None
         return self.fee_detection_from_trades(
             trade, order, order_obj, order_amount, order.get('trades', []))
 
     def fee_detection_from_trades(self, trade: Trade, order: Dict, order_obj: Order,
-                                  order_amount: float, trades: List) -> float:
+                                  order_amount: float, trades: List) -> Optional[float]:
         """
         fee-detection fallback to Trades.
         Either uses provided trades list or the result of fetch_my_trades to get correct fee.
@@ -1840,7 +1856,7 @@ class FreqtradeBot(LoggingMixin):
 
         if len(trades) == 0:
             logger.info("Applying fee on amount for %s failed: myTrade-Dict empty found", trade)
-            return order_amount
+            return None
         fee_currency = None
         amount = 0
         fee_abs = 0.0
@@ -1872,6 +1888,9 @@ class FreqtradeBot(LoggingMixin):
             if fee_rate is not None and fee_rate < 0.02:
                 # Only update if fee-rate is < 2%
                 trade.update_fee(fee_cost, fee_currency, fee_rate, order.get('side', ''))
+            else:
+                logger.warning(
+                    f"Not updating {order.get('side', '')}-fee - rate: {fee_rate}, {fee_currency}.")
 
         if not isclose(amount, order_amount, abs_tol=constants.MATH_CLOSE_PREC):
             # * Leverage could be a cause for this warning
@@ -1879,10 +1898,9 @@ class FreqtradeBot(LoggingMixin):
             raise DependencyException("Half bought? Amounts don't match")
 
         if fee_abs != 0:
-            return self.apply_fee_conditional(trade, trade_base_currency,
-                                              amount=amount, fee_abs=fee_abs)
-        else:
-            return amount
+            return self.apply_fee_conditional(
+                trade, trade_base_currency, amount=amount, fee_abs=fee_abs, order_obj=order_obj)
+        return None
 
     def get_valid_price(self, custom_price: float, proposed_price: float) -> float:
         """

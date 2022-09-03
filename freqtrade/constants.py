@@ -23,7 +23,8 @@ REQUIRED_ORDERTIF = ['entry', 'exit']
 REQUIRED_ORDERTYPES = ['entry', 'exit', 'stoploss', 'stoploss_on_exchange']
 PRICING_SIDES = ['ask', 'bid', 'same', 'other']
 ORDERTYPE_POSSIBILITIES = ['limit', 'market']
-ORDERTIF_POSSIBILITIES = ['gtc', 'fok', 'ioc']
+_ORDERTIF_POSSIBILITIES = ['GTC', 'FOK', 'IOC', 'PO']
+ORDERTIF_POSSIBILITIES = _ORDERTIF_POSSIBILITIES + [t.lower() for t in _ORDERTIF_POSSIBILITIES]
 HYPEROPT_LOSS_BUILTIN = ['ShortTradeDurHyperOptLoss', 'OnlyProfitHyperOptLoss',
                          'SharpeHyperOptLoss', 'SharpeHyperOptLossDaily',
                          'SortinoHyperOptLoss', 'SortinoHyperOptLossDaily',
@@ -56,6 +57,7 @@ FTHYPT_FILEVERSION = 'fthypt_fileversion'
 USERPATH_HYPEROPTS = 'hyperopts'
 USERPATH_STRATEGIES = 'strategies'
 USERPATH_NOTEBOOKS = 'notebooks'
+USERPATH_FREQAIMODELS = 'freqaimodels'
 
 TELEGRAM_SETTING_OPTIONS = ['on', 'off', 'silent']
 WEBHOOK_FORMAT_OPTIONS = ['form', 'json', 'raw']
@@ -241,6 +243,7 @@ CONF_SCHEMA = {
         },
         'exchange': {'$ref': '#/definitions/exchange'},
         'edge': {'$ref': '#/definitions/edge'},
+        'freqai': {'$ref': '#/definitions/freqai'},
         'experimental': {
             'type': 'object',
             'properties': {
@@ -481,7 +484,60 @@ CONF_SCHEMA = {
                 'remove_pumps': {'type': 'boolean'}
             },
             'required': ['process_throttle_secs', 'allowed_risk']
-        }
+        },
+        "freqai": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "default": False},
+                "keras": {"type": "boolean", "default": False},
+                "conv_width": {"type": "integer", "default": 2},
+                "train_period_days": {"type": "integer", "default": 0},
+                "backtest_period_days": {"type": "number", "default": 7},
+                "identifier": {"type": "string", "default": "example"},
+                "feature_parameters": {
+                    "type": "object",
+                    "properties": {
+                        "include_corr_pairlist": {"type": "array"},
+                        "include_timeframes": {"type": "array"},
+                        "label_period_candles": {"type": "integer"},
+                        "include_shifted_candles": {"type": "integer", "default": 0},
+                        "DI_threshold": {"type": "number", "default": 0},
+                        "weight_factor": {"type": "number", "default": 0},
+                        "principal_component_analysis": {"type": "boolean", "default": False},
+                        "use_SVM_to_remove_outliers": {"type": "boolean", "default": False},
+                        "svm_params": {"type": "object",
+                                       "properties": {
+                                           "shuffle": {"type": "boolean", "default": False},
+                                           "nu": {"type": "number", "default": 0.1}
+                                           },
+                                       }
+                    },
+                    "required": ["include_timeframes", "include_corr_pairlist", ]
+                },
+                "data_split_parameters": {
+                    "type": "object",
+                    "properties": {
+                        "test_size": {"type": "number"},
+                        "random_state": {"type": "integer"},
+                    },
+                },
+                "model_training_parameters": {
+                    "type": "object",
+                    "properties": {
+                        "n_estimators": {"type": "integer", "default": 1000}
+                    },
+                },
+            },
+            "required": [
+                "enabled",
+                "train_period_days",
+                "backtest_period_days",
+                "identifier",
+                "feature_parameters",
+                "data_split_parameters",
+                "model_training_parameters"
+                ]
+        },
     },
 }
 
