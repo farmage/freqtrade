@@ -26,7 +26,7 @@ from telegram.utils.helpers import escape_markdown
 from freqtrade.__init__ import __version__
 from freqtrade.constants import DUST_PER_COIN, Config
 from freqtrade.enums import RPCMessageType, SignalDirection, TradingMode
-from freqtrade.exceptions import OperationalException
+from freqtrade.exceptions import DependencyException, OperationalException
 from freqtrade.misc import chunks, plural, round_coin_value
 from freqtrade.persistence import Trade
 from freqtrade.rpc import RPC, RPCException, RPCHandler
@@ -444,8 +444,8 @@ class Telegram(RPCHandler):
         message = self.compose_message(deepcopy(msg), msg_type)
 
         if message:
-            _repost_to_channel = msg_type in [RPCMessageType.ENTRY, RPCMessageType.ENTRY_FILL, RPCMessageType.EXIT_FILL]
-            self._send_msg(message, disable_notification=(noti == 'silent'), repost_to_channel=_repost_to_channel)
+            _repost_to_channel = msg_type in [RPCMessageType.ENTRY, RPCMessageType.ENTRY_FILL, RPCMessageType.EXIT_FILL] # noqa
+            self._send_msg(message, disable_notification=(noti == 'silent'), repost_to_channel=_repost_to_channel) # noqa
 
     def _get_sell_emoji(self, msg):
         """
@@ -1064,7 +1064,7 @@ class Telegram(RPCHandler):
         if pair != 'cancel':
             try:
                 self._rpc._rpc_force_entry(pair, price, order_side=order_side)
-            except RPCException as e:
+            except (RPCException, DependencyException) as e:
                 self._send_msg(str(e))
 
     def _force_enter_inline(self, update: Update, _: CallbackContext) -> None:
