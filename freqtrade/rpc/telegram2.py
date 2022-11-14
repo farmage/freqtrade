@@ -1519,6 +1519,7 @@ class Telegram(RPCHandler):
         message = (
             "_Bot Control_\n"
             "------------\n"
+            "*/maxtrades <count>:* `Change max open trades to count. 0 - no new trades`\n"
             "*/start:* `Starts the trader`\n"
             "*/stop:* Stops the trader\n"
             "*/stopentry:* `Stops entering, but handles open trades gracefully` \n"
