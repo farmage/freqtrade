@@ -194,6 +194,7 @@ class Telegram(RPCHandler):
             CommandHandler('health', self._health),
             CommandHandler('help', self._help),
             CommandHandler('version', self._version),
+            CommandHandler(['maxtrades'], self._maxtrades),
         ]
         callbacks = [
             CallbackQueryHandler(self._status_table, pattern='update_status_table'),
@@ -1003,6 +1004,29 @@ class Telegram(RPCHandler):
         """
         msg = self._rpc._rpc_stopentry()
         self._send_msg(f"Status: `{msg['status']}`")
+
+    @authorized_only
+    def _maxtrades(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /maxtrades <max_open_trades>.
+        Sets max_open_trades to value
+        :param bot: telegram bot
+        :param update: message update
+        :return: None
+        """
+        try:
+
+            # Check if there's at least one numerical ID provided.
+            # If so, try to get only these trades.
+            trade_ids = []
+            if context.args and len(context.args) > 0:
+                trade_ids = [int(i) for i in context.args if i.isnumeric()]
+
+                msg = self._rpc._rpc_adjust_entries_count(trade_ids[0])
+                self._send_msg(f"Status: `{msg['status']}`")
+
+        except RPCException as e:
+            self._send_msg(str(e))
 
     @authorized_only
     def _force_exit(self, update: Update, context: CallbackContext) -> None:

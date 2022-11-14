@@ -671,6 +671,16 @@ class RPC:
 
         return {'status': 'No more entries will occur from now. Run /reload_config to reset.'}
 
+    def _rpc_adjust_entries_count(self, max_count: int) -> Dict[str, str]:
+        """
+        Handler to adjust max entries count.
+        """
+        if self._freqtrade.state == State.RUNNING:
+            # Set 'max_open_trades'
+            self._freqtrade.config['max_open_trades'] = max_count
+
+        return {'status': f'max_open_trades is adjusted to {max_count}.'}
+
     def __exec_force_exit(self, trade: Trade, ordertype: Optional[str],
                           amount: Optional[float] = None) -> None:
         # Check if there is there is an open order
