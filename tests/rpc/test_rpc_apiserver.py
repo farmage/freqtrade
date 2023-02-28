@@ -1015,6 +1015,7 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'profit_pct': ANY,
         'profit_abs': ANY,
         'profit_fiat': ANY,
+        'realized_profit': 0.0,
         'current_rate': current_rate,
         'open_date': ANY,
         'open_timestamp': ANY,
@@ -1244,6 +1245,7 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'profit_pct': None,
         'profit_abs': None,
         'profit_fiat': None,
+        'realized_profit': 0.0,
         'fee_close': 0.0025,
         'fee_close_cost': None,
         'fee_close_currency': None,
@@ -1280,7 +1282,7 @@ def test_api_forceexit(botclient, mocker, ticker, fee, markets):
         fetch_ticker=ticker,
         get_fee=fee,
         markets=PropertyMock(return_value=markets),
-        _is_dry_limit_order_filled=MagicMock(return_value=True),
+        _dry_is_price_crossed=MagicMock(return_value=True),
     )
     patch_get_signal(ftbot)
 
@@ -1737,9 +1739,15 @@ def test_api_backtesting(botclient, mocker, fee, caplog, tmpdir):
     data['stake_amount'] = 101
 
     mocker.patch('freqtrade.optimize.backtesting.Backtesting.backtest_one_strategy',
-                 side_effect=DependencyException())
+                 side_effect=DependencyException('DeadBeef'))
     rc = client_post(client, f"{BASE_URI}/backtest", data=data)
-    assert log_has("Backtesting caused an error: ", caplog)
+    assert log_has("Backtesting caused an error: DeadBeef", caplog)
+
+    rc = client_get(client, f"{BASE_URI}/backtest")
+    assert_response(rc)
+    result = rc.json()
+    assert result['status'] == 'error'
+    assert 'Backtest failed' in result['status_msg']
 
     # Delete backtesting to avoid leakage since the backtest-object may stick around.
     rc = client_delete(client, f"{BASE_URI}/backtest")

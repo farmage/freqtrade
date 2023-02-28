@@ -27,7 +27,7 @@ from tests.conftest import (generate_test_data_raw, get_mock_coro, get_patched_e
 
 
 # Make sure to always keep one exchange here which is NOT subclassed!!
-EXCHANGES = ['bittrex', 'binance', 'kraken', 'gate']
+EXCHANGES = ['bittrex', 'binance', 'kraken', 'gate', 'kucoin', 'bybit']
 
 get_entry_rate_data = [
     ('other', 20, 19, 10, 0.0, 20),  # Full ask side
@@ -1223,7 +1223,7 @@ def test_create_dry_run_order_fees(
         'freqtrade.exchange.Exchange.get_fee',
         side_effect=lambda symbol, taker_or_maker: 2.0 if taker_or_maker == 'taker' else 1.0
     )
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled',
+    mocker.patch('freqtrade.exchange.Exchange._dry_is_price_crossed',
                  return_value=price_side == 'other')
     exchange = get_patched_exchange(mocker, default_conf)
 
@@ -1241,25 +1241,27 @@ def test_create_dry_run_order_fees(
     else:
         assert order['fee'] is None
 
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled',
+    mocker.patch('freqtrade.exchange.Exchange._dry_is_price_crossed',
                  return_value=price_side != 'other')
 
     order1 = exchange.fetch_dry_run_order(order['id'])
     assert order1['fee']['rate'] == fee
 
 
-@pytest.mark.parametrize("side,price,filled", [
+@pytest.mark.parametrize("side,price,filled,converted", [
     # order_book_l2_usd spread:
     # best ask: 25.566
     # best bid: 25.563
-    ("buy", 25.563, False),
-    ("buy", 25.566, True),
-    ("sell", 25.566, False),
-    ("sell", 25.563, True),
+    ("buy", 25.563, False, False),
+    ("buy", 25.566, True, False),
+    ("sell", 25.566, False, False),
+    ("sell", 25.563, True, False),
+    ("buy", 29.563, True, True),
+    ("sell", 21.563, True, True),
 ])
 @pytest.mark.parametrize("exchange_name", EXCHANGES)
-def test_create_dry_run_order_limit_fill(default_conf, mocker, side, price, filled,
-                                         exchange_name, order_book_l2_usd):
+def test_create_dry_run_order_limit_fill(default_conf, mocker, side, price, filled, caplog,
+                                         exchange_name, order_book_l2_usd, converted):
     default_conf['dry_run'] = True
     exchange = get_patched_exchange(mocker, default_conf, id=exchange_name)
     mocker.patch.multiple('freqtrade.exchange.Exchange',
@@ -1267,7 +1269,7 @@ def test_create_dry_run_order_limit_fill(default_conf, mocker, side, price, fill
                           fetch_l2_order_book=order_book_l2_usd,
                           )
 
-    order = exchange.create_dry_run_order(
+    order = exchange.create_order(
         pair='LTC/USDT',
         ordertype='limit',
         side=side,
@@ -1279,9 +1281,16 @@ def test_create_dry_run_order_limit_fill(default_conf, mocker, side, price, fill
     assert 'id' in order
     assert f'dry_run_{side}_' in order["id"]
     assert order["side"] == side
-    assert order["type"] == "limit"
+    if not converted:
+        assert order["average"] == price
+        assert order["type"] == "limit"
+    else:
+        # Converted to market order
+        assert order["type"] == "market"
+        assert 25.5 < order["average"] < 25.6
+        assert log_has_re(r"Converted .* to market order.*", caplog)
+
     assert order["symbol"] == "LTC/USDT"
-    assert order["average"] == price
     assert order['status'] == 'open' if not filled else 'closed'
     order_book_l2_usd.reset_mock()
 
@@ -1323,7 +1332,7 @@ def test_create_dry_run_order_market_fill(default_conf, mocker, side, rate, amou
                           fetch_l2_order_book=order_book_l2_usd,
                           )
 
-    order = exchange.create_dry_run_order(
+    order = exchange.create_order(
         pair='LTC/USDT',
         ordertype='market',
         side=side,
@@ -1416,9 +1425,10 @@ def test_create_order(default_conf, mocker, side, ordertype, rate, marketprice, 
     assert order['amount'] == 0.01
 
 
-def test_buy_dry_run(default_conf, mocker):
+@pytest.mark.parametrize("exchange_name", EXCHANGES)
+def test_buy_dry_run(default_conf, mocker, exchange_name):
     default_conf['dry_run'] = True
-    exchange = get_patched_exchange(mocker, default_conf)
+    exchange = get_patched_exchange(mocker, default_conf, id=exchange_name)
 
     order = exchange.create_order(pair='ETH/BTC', ordertype='limit', side="buy",
                                   amount=1, rate=200, leverage=1.0,
@@ -2206,7 +2216,7 @@ def test_refresh_latest_ohlcv_cache(mocker, default_conf, candle_type, time_mach
     assert len(res[pair1]) == 99
     assert len(res[pair2]) == 99
     assert exchange._klines
-    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-1][0] // 1000
+    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-2][0] // 1000
     exchange._api_async.fetch_ohlcv.reset_mock()
 
     # Returned from cache
@@ -2215,7 +2225,7 @@ def test_refresh_latest_ohlcv_cache(mocker, default_conf, candle_type, time_mach
     assert len(res) == 2
     assert len(res[pair1]) == 99
     assert len(res[pair2]) == 99
-    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-1][0] // 1000
+    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-2][0] // 1000
 
     # Move time 1 candle further but result didn't change yet
     time_machine.move_to(start + timedelta(hours=101))
@@ -2225,7 +2235,7 @@ def test_refresh_latest_ohlcv_cache(mocker, default_conf, candle_type, time_mach
     assert len(res[pair1]) == 99
     assert len(res[pair2]) == 99
     assert res[pair2].at[0, 'open']
-    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-1][0] // 1000
+    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-2][0] // 1000
     refresh_pior = exchange._pairs_last_refresh_time[pair1]
 
     # New candle on exchange - return 100 candles - but skip one candle so we actually get 2 candles
@@ -2243,8 +2253,8 @@ def test_refresh_latest_ohlcv_cache(mocker, default_conf, candle_type, time_mach
     assert res[pair2].at[0, 'open']
     assert refresh_pior != exchange._pairs_last_refresh_time[pair1]
 
-    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-1][0] // 1000
-    assert exchange._pairs_last_refresh_time[pair2] == ohlcv[-1][0] // 1000
+    assert exchange._pairs_last_refresh_time[pair1] == ohlcv[-2][0] // 1000
+    assert exchange._pairs_last_refresh_time[pair2] == ohlcv[-2][0] // 1000
     exchange._api_async.fetch_ohlcv.reset_mock()
 
     # Retry same call - from cache
@@ -3018,7 +3028,7 @@ def test_get_historic_trades_notsupported(default_conf, mocker, caplog, exchange
 def test_cancel_order_dry_run(default_conf, mocker, exchange_name):
     default_conf['dry_run'] = True
     exchange = get_patched_exchange(mocker, default_conf, id=exchange_name)
-    mocker.patch('freqtrade.exchange.Exchange._is_dry_limit_order_filled', return_value=True)
+    mocker.patch('freqtrade.exchange.Exchange._dry_is_price_crossed', return_value=True)
     assert exchange.cancel_order(order_id='123', pair='TKN/BTC') == {}
     assert exchange.cancel_stoploss_order(order_id='123', pair='TKN/BTC') == {}
 
@@ -5006,7 +5016,7 @@ def test_get_max_leverage_futures(default_conf, mocker, leverage_tiers):
         exchange.get_max_leverage("BTC/USDT:USDT", 1000000000.01)
 
 
-@pytest.mark.parametrize("exchange_name", ['bittrex', 'binance', 'kraken', 'gate', 'okx'])
+@pytest.mark.parametrize("exchange_name", ['bittrex', 'binance', 'kraken', 'gate', 'okx', 'bybit'])
 def test__get_params(mocker, default_conf, exchange_name):
     api_mock = MagicMock()
     mocker.patch('freqtrade.exchange.Exchange.exchange_has', return_value=True)
@@ -5026,6 +5036,9 @@ def test__get_params(mocker, default_conf, exchange_name):
     if exchange_name == 'okx':
         params2['tdMode'] = 'isolated'
         params2['posSide'] = 'net'
+
+    if exchange_name == 'bybit':
+        params2['position_idx'] = 0
 
     assert exchange._get_params(
         side="buy",
